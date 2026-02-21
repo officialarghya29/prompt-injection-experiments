@@ -10,7 +10,7 @@ import re
 from typing import Optional, Dict, List
 from pathlib import Path
 import sys
-
+# Add src directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from models import RequestEnvelope, LayerResult
@@ -103,7 +103,7 @@ class Layer5OutputValidation:
         # Check for system prompt leakage
         if self.check_system_leakage:
             leakage_detected, leakage_details = self._check_leakage(
-                llm_output, system_prompt
+                llm_output, system_prompt, threshold_adjustment
             )
             
             if leakage_detected:
@@ -118,7 +118,7 @@ class Layer5OutputValidation:
         # Check for policy violations
         if self.check_policy_violations:
             policy_violations, violation_details = self._check_policy_violations(
-                llm_output
+                llm_output, threshold_adjustment
             )
             
             if policy_violations:
@@ -192,7 +192,8 @@ class Layer5OutputValidation:
     def _check_leakage(
         self, 
         output: str,
-        system_prompt: Optional[str]
+        system_prompt: Optional[str],
+        threshold_adjustment: float = 0.0
     ) -> tuple[bool, List[str]]:
         """
         Check if output leaks system prompt information.
@@ -213,17 +214,25 @@ class Layer5OutputValidation:
         
         # Check for direct system prompt content if provided
         if system_prompt:
-            # Split system prompt into meaningful chunks (5+ words)
+            # Scale chunk size based on threshold adjustment (more sensitive = smaller chunks)
+            # Default is 5 words. Min is 3 words.
+            base_chunk_size = 5
+            adj_chunk_size = max(3, base_chunk_size - int(threshold_adjustment * 5))
+            
             words = system_prompt.split()
-            for i in range(len(words) - 4):
-                chunk = " ".join(words[i:i+5])
-                if len(chunk) > 20 and chunk.lower() in output.lower():
-                    details.append(f"Direct leakage: '{chunk}'")
-                    break  # One detection is enough
+            for i in range(len(words) - (adj_chunk_size - 1)):
+                chunk = " ".join(words[i:i+adj_chunk_size])
+                if len(chunk) > 15 and chunk.lower() in output.lower():
+                    details.append(f"Direct leakage (chunk={adj_chunk_size}): '{chunk}'")
+                    break
         
         return len(details) > 0, details
     
-    def _check_policy_violations(self, output: str) -> tuple[bool, List[str]]:
+    def _check_policy_violations(
+        self, 
+        output: str,
+        threshold_adjustment: float = 0.0
+    ) -> tuple[bool, List[str]]:
         """
         Check for policy violation keywords in output.
         
@@ -241,7 +250,13 @@ class Layer5OutputValidation:
                 violations.append(keyword)
         
         # More than 2 policy keywords is suspicious
-        return len(violations) >= 3, violations
+        # Adjust violation count threshold (lower = more strict)
+        # Default 3 violations, scales down to 1
+        base_threshold = 3
+        effective_threshold = max(1, base_threshold - int(threshold_adjustment * 5))
+        
+        passed = len(violations) < effective_threshold
+        return not passed, violations
     
     def _check_encoding(self, output: str) -> tuple[bool, List[str]]:
         """

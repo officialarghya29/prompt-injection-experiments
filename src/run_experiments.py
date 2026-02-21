@@ -21,6 +21,13 @@ import time
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
 from experiment_runner import ExperimentRunner
+# Try to import large benign prompts if they exist
+try:
+    # Add root to path to ensure data package is findable
+    sys.path.insert(0, str(Path(__file__).parent.parent))
+    from data.benign_prompts_large import BENIGN_PROMPTS_LARGE
+except ImportError:
+    BENIGN_PROMPTS_LARGE = None
 
 # Setup logging
 logging.basicConfig(
@@ -34,13 +41,13 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def estimate_time(num_attacks, num_benign, num_configs):
+def estimate_time(num_attacks, num_benign, num_configs, workers=1):
     """Estimate total experiment time."""
     # Conservative estimates:
     # - Attack prompts: ~10s each (with defenses, some blocked early)
     # - Benign prompts: ~30s each (longer, more complex)
-    attack_time = num_attacks * num_configs * 10  # seconds
-    benign_time = num_benign * num_configs * 30  # seconds
+    attack_time = (num_attacks * num_configs * 10) / workers  # seconds
+    benign_time = (num_benign * num_configs * 30) / workers  # seconds
     total_seconds = attack_time + benign_time
     
     hours = total_seconds / 3600
@@ -72,13 +79,49 @@ def main():
         default=None,
         help="Random seed for reproducibility (default: None)"
     )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=1,
+        help="Number of parallel workers for trials (default: 1, recommended: 5 for free tier)"
+    )
+    parser.add_argument(
+        "--yes", "-y",
+        action="store_true",
+        help="Skip confirmation prompt for long-running experiments"
+    )
+    parser.add_argument(
+        "--config-filter",
+        type=str,
+        help="Filter configurations by name (e.g., 'FullWorkflow')"
+    )
+    parser.add_argument(
+        "--stress-test",
+        action="store_true",
+        help="Run Utility Stress Test using 1,000 benign prompts"
+    )
     args = parser.parse_args()
     
     logger.info("="*80)
     logger.info("PROMPT INJECTION EXPERIMENT RUNNER")
     logger.info("="*80)
     
-    runner = ExperimentRunner(n_trials=args.trials, random_seed=args.seed)
+    # Load stress test prompts if requested
+    benign_set = None
+    if args.stress_test:
+        if BENIGN_PROMPTS_LARGE:
+            logger.info(f"STRESS TEST MODE: Loading {len(BENIGN_PROMPTS_LARGE)} benign prompts")
+            benign_set = BENIGN_PROMPTS_LARGE
+        else:
+            logger.error("Large benign dataset not found. Run src/tools/generate_benign_prompts.py first.")
+            return 1
+
+    runner = ExperimentRunner(
+        n_trials=args.trials, 
+        random_seed=args.seed,
+        max_workers=args.workers,
+        benign_prompts=benign_set
+    )
     
     # Quick mode for testing
     if args.quick:
@@ -114,7 +157,7 @@ def main():
         # All experiments
         num_configs = 4 + 4 + 5 + 5  # Sum of all configs
     
-    estimated_hours = estimate_time(num_attacks, num_benign, num_configs) * args.trials
+    estimated_hours = estimate_time(num_attacks, num_benign, num_configs, args.workers) * args.trials
     logger.info(f"\nEstimated time: {estimated_hours:.1f} hours ({estimated_hours * 60:.0f} minutes)")
     logger.info(f"  ({num_attacks} attacks + {num_benign} benign) × {num_configs} configs × {args.trials} trials")
     logger.info(f"  = {(num_attacks * num_configs + num_benign * num_configs) * args.trials} total LLM calls")
@@ -123,12 +166,16 @@ def main():
         logger.info(f"\n📊 STATISTICAL MODE: {args.trials} randomized trials per configuration")
         logger.info(f"   Results will include confidence intervals and statistical tests")
     
-    # Confirm if not quick mode
-    if not args.quick and estimated_hours > 1.0:
-        response = input(f"\nThis will take approximately {estimated_hours:.1f} hours. Continue? [y/N] ")
-        if response.lower() != 'y':
-            logger.info("Aborted by user")
-            return 0
+    # Confirm if not quick mode and not auto-approved
+    if not args.quick and not args.yes and estimated_hours > 1.0:
+        try:
+            response = input(f"\nThis will take approximately {estimated_hours:.1f} hours. Continue? [y/N] ")
+            if response.lower() != 'y':
+                logger.info("Aborted by user")
+                return 0
+        except EOFError:
+            logger.error("Non-interactive mode detected but no --yes flag provided. Aborting.")
+            return 1
     
     start_time = time.time()
     
@@ -142,7 +189,7 @@ def main():
             elif args.experiment == 2:
                 results = {"experiment_2": runner.run_experiment_2()}
             elif args.experiment == 3:
-                results = {"experiment_3": runner.run_experiment_3()}
+                results = {"experiment_3": runner.run_experiment_3(config_filter=args.config_filter)}
             elif args.experiment == 4:
                 results = {"experiment_4": runner.run_experiment_4()}
             
@@ -180,11 +227,21 @@ def main():
             
             if isinstance(exp_data, dict):
                 for config_name, config_data in exp_data.items():
-                    if isinstance(config_data, dict) and "metrics" in config_data:
+                    if not isinstance(config_data, dict):
+                        continue
+                        
+                    # Handle aggregated results (pooled_asr)
+                    if "pooled_asr" in config_data:
+                        asr = config_data["pooled_asr"]
+                        fpr = config_data.get("pooled_fpr", 0.0)
+                        trials = config_data.get("trials_completed", 1)
+                        print(f"  {config_name:30s} ASR={asr:5.1%}  FPR={fpr:5.1%} (Trials: {trials})")
+                    # Handle single trial results (legacy/backup)
+                    elif "metrics" in config_data:
                         metrics = config_data["metrics"]
                         asr = metrics.get("attack_success_rate", 0)
-                        fp = metrics.get("false_positive_rate", 0)
-                        print(f"  {config_name:30s} ASR={asr:5.1%}  FP={fp:5.1%}")
+                        fpr = metrics.get("false_positive_rate", 0)
+                        print(f"  {config_name:30s} ASR={asr:5.1%}  FPR={fpr:5.1%}")
         
         print("\n" + "="*80)
         print("Results saved to:")

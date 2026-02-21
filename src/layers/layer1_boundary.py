@@ -9,8 +9,9 @@ import time
 import unicodedata
 from typing import Optional
 
-import sys
 from pathlib import Path
+import sys
+# Add src directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from models import RequestEnvelope, LayerResult

@@ -9,7 +9,7 @@ import time
 from typing import Optional, Dict, List, Literal
 from pathlib import Path
 import sys
-
+# Add src directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from models import RequestEnvelope, LayerResult
@@ -214,8 +214,10 @@ class Layer3ContextIsolation:
         if any(tag in user_input for tag in ["<system>", "</system>", "<instruction>", "</instruction>"]):
             violations.append("tag_injection")
         
-        # Check for attempts to escape context
-        escape_sequences = ["```", "---", "===", "###"]
+        # Check for attempts to escape context using code/delimiter injections
+        # Only triple-backtick is a genuine LLM boundary escape attempt;
+        # ---/===/### are standard markdown and caused massive false positives.
+        escape_sequences = ["```"]
         if any(seq in user_input for seq in escape_sequences):
             violations.append("escape_sequence")
         

@@ -13,123 +13,139 @@ from pathlib import Path
 
 # Set global style for professional look
 plt.rcParams['font.family'] = 'sans-serif'
-plt.rcParams['font.sans-serif'] = ['Arial', 'DejaVu Sans', 'Liberation Sans']
+plt.rcParams['font.sans-serif'] = ['Inter', 'Roboto', 'Arial', 'DejaVu Sans']
 plt.rcParams['figure.dpi'] = 300
 plt.rcParams['savefig.bbox'] = 'tight'
+
+# Curated Professional Palette
+PALETTE = {
+    'l1': '#FFECB3', # Light Amber
+    'l2': '#BBDEFB', # Light Blue
+    'l3': '#C8E6C9', # Light Green
+    'l4': '#F8BBD0', # Light Pink
+    'l5': '#D1C4E9', # Light Purple
+    'l6': '#FFF9C4', # Light Yellow
+    'adaptive': '#E0F2F1', # Teal-ish
+    'border': '#455A64',   # Slate Grey
+    'text': '#263238',     # Dark Charcoal
+    'accent': '#1DE9B6',   # Teal Bright
+    'danger': '#FF5252'    # Soft Red
+}
+
+class DrawContext:
+    """Helper to manage relative geometry and consistent styling."""
+    def __init__(self, ax):
+        self.ax = ax
+        self.arrow_props = dict(arrowstyle='-|>', lw=1.5, color=PALETTE['border'], 
+                               mutation_scale=20, shrinkA=2, shrinkB=2)
+        
+    def draw_box(self, x, y, width, height, title, color, subtitle=None, linestyle='-', title_y_offset=0):
+        rect = mpatches.FancyBboxPatch((x - width/2, y - height/2), width, height,
+                              boxstyle="round,pad=0.1", fc=color, ec=PALETTE['border'], 
+                              lw=1.5, linestyle=linestyle, zorder=2)
+        self.ax.add_patch(rect)
+        
+        # Title placement with optional offset
+        self.ax.text(x, y + title_y_offset, title, ha='center', va='center', 
+                     fontsize=10, fontweight='bold', color=PALETTE['text'], zorder=3)
+        if subtitle:
+            self.ax.text(x, y - 0.35 + title_y_offset, subtitle, ha='center', va='center', 
+                         fontsize=8, style='italic', color='#546E7A', zorder=3)
+        return (x, y, width, height)
+
+    def connect(self, start_xy, end_xy, label=None, connectionstyle=None, color=None, **kwargs):
+        props = self.arrow_props.copy()
+        if color: props['color'] = color
+        if connectionstyle: props['connectionstyle'] = connectionstyle
+        props.update(kwargs)
+        
+        self.ax.annotate('', xy=end_xy, xytext=start_xy, arrowprops=props, zorder=1)
+        if label:
+            mid_x = (start_xy[0] + end_xy[0]) / 2
+            mid_y = (start_xy[1] + end_xy[1]) / 2
+            self.ax.text(mid_x, mid_y + 0.1, label, ha='center', va='bottom', fontsize=9, fontweight='bold')
 
 def create_architecture_diagram():
     """Create the architecture diagram showing the multi-layer defense system."""
     fig, ax = plt.subplots(figsize=(12, 8))
+    ctx = DrawContext(ax)
     
-    # Set up the plot
-    ax.set_xlim(0, 12)  # Expanded width for side annotations
+    ax.set_xlim(0, 12)
     ax.set_ylim(0, 8)
     ax.axis('off')
     
-    # Define layer positions
-    layer_y_positions = [6.5, 5.5, 4.5, 3.5, 2.5]  # y positions for each layer
-    layer_names = [
-        "Layer 1: Boundary Layer",
-        "Layer 2: Semantic Layer", 
-        "Layer 3: Context Isolation",
-        "Layer 4: LLM Interaction",
-        "Layer 5: Output Validation"
+    # Layer Definitions
+    layers = [
+        ("Layer 1: Boundary Layer", PALETTE['l1'], "Normalization & Regex"),
+        ("Layer 2: Semantic Layer", PALETTE['l2'], "Similarity Pattern Mapping"),
+        ("Layer 3: Context Isolation", PALETTE['l3'], "Role-Separated Segments"),
+        ("Layer 4: LLM Interaction", PALETTE['l4'], "Controlled Prompt Injection"),
+        ("Layer 5: Output Validation", PALETTE['l5'], "Content Leakage Detection")
     ]
     
-    # Professional color palette (pastel/soft)
-    colors = ['#FFCBCB', '#CCE5FF', '#D5F5E3', '#FDEBD0', '#E8DAEF']
-    border_color = '#333333'
+    layer_widths = 7
+    layer_height = 0.6
+    spacing = 1.0
+    start_y = 6.8
     
-    # Draw each layer as a rectangle
-    for i, (y_pos, name, color) in enumerate(zip(layer_y_positions, layer_names, colors)):
-        rect = plt.Rectangle((1.5, y_pos-0.35), 8, 0.7, 
-                           facecolor=color, edgecolor=border_color, linewidth=1.5, zorder=2)
-        ax.add_patch(rect)
+    layer_centers = []
+    for i, (name, color, desc) in enumerate(layers):
+        y = start_y - (i * spacing)
+        ctx.draw_box(6, y, layer_widths, layer_height, name, color, subtitle=desc)
+        layer_centers.append((6, y))
         
-        # Add layer name
-        ax.text(5.5, y_pos, name, ha='center', va='center', 
-                fontsize=11, fontweight='bold', color='#1a1a1a', zorder=3)
-        
-        # Add description
-        descriptions = [
-            "Input validation and normalization",
-            "Attack pattern detection via similarity", 
-            "Secure prompt isolation & role separation",
-            "Enhanced LLM safety controls",
-            "Content filtering & verification"
-        ]
-        ax.text(5.5, y_pos-0.2, descriptions[i], ha='center', va='top', 
-                fontsize=8, style='italic', color='#444444', zorder=3)
+        # Connect to next layer
+        if i > 0:
+            prev_y = layer_centers[i-1][1] - (layer_height/2)
+            curr_y = y + (layer_height/2)
+            ctx.connect((6, prev_y), (6, curr_y))
+
+    # Layer 6: Feedback (Bottom)
+    feedback_y = 1.2
+    ctx.draw_box(6, feedback_y, 9, 0.8, "Layer 6: Feedback Coordination", 
+                 PALETTE['l6'], subtitle="Continuous Evaluation & Offline Refinement", linestyle='--')
     
-    # Draw input arrow
-    ax.annotate('User Requests', xy=(0.5, 7), xytext=(0.5, 7.5),
-                fontsize=10, ha='center', va='center', fontweight='bold')
-    ax.annotate('', xy=(5.5, 7.0), xytext=(0.5, 7.2),
-                arrowprops=dict(arrowstyle='->', lw=1.5, color='#444444', connectionstyle="angle,angleA=0,angleB=90,rad=10"))
+    # Feedback flow (Side curves)
+    for i, (lx, ly) in enumerate(layer_centers):
+        # From internal layers to L6
+        start = (lx - layer_widths/2, ly)
+        end = (lx - 3.5, feedback_y + 0.4)
+        ctx.connect(start, end, connectionstyle="arc3,rad=0.3", color='#B0BEC5')
 
-    # Connecting arrows between layers (straight down)
-    for i in range(len(layer_y_positions) - 1):
-        y1 = layer_y_positions[i] - 0.35
-        y2 = layer_y_positions[i+1] + 0.35
-        # Main flow
-        ax.annotate('', xy=(5.5, y2), xytext=(5.5, y1),
-                    arrowprops=dict(arrowstyle='->', lw=1.2, color='#555555'))
+    # Adaptive Elements (Right callout)
+    bbox_props = dict(boxstyle="round,pad=0.5", facecolor=PALETTE['adaptive'], 
+                      edgecolor=PALETTE['accent'], alpha=0.9, linewidth=1.5)
+    ax.text(10.5, 4.0, 'Adaptive Elements\n(L2-L4, L6)', 
+            ha='center', va='center', fontsize=10, fontweight='bold', color='#00695C', bbox=bbox_props, zorder=4)
     
-    # Draw Output Arrow
-    ax.annotate('', xy=(10.5, 2.5), xytext=(9.5, 2.5),
-                 arrowprops=dict(arrowstyle='->', lw=1.5, color='#444444'))
-    ax.text(10.6, 2.5, 'Processed\nResponse', ha='left', va='center', fontsize=10, fontweight='bold')
+    # Connect adaptive box to L2, L3, L4
+    for i in [1, 2, 3]:
+        ly = layer_centers[i][1]
+        ctx.connect((10.0, 4.0), (6 + layer_widths/2, ly), color=PALETTE['accent'], linestyle=':')
 
-    # Draw Layer 6: Coordination
-    coord_rect = plt.Rectangle((1, 0.8), 9, 0.8, 
-                              facecolor='#FFF59D', edgecolor=border_color, linewidth=1.5, linestyle='--', zorder=2)
-    ax.add_patch(coord_rect)
-    ax.text(5.5, 1.3, 'Layer 6: Feedback Coordination', 
-            ha='center', va='center', fontsize=11, fontweight='bold', zorder=3)
-    ax.text(5.5, 1.05, 'Inter-layer communication & offline adaptation', 
-            ha='center', va='center', fontsize=9, style='italic', zorder=3)
-    
-    # Feedback arrows (side arrows)
-    # Reducing noise: just show abstract flow
-    for y_pos in layer_y_positions:
-        # From layers to coordination (left side)
-        ax.annotate('', xy=(1.0, 1.2), xytext=(1.5, y_pos),
-                    arrowprops=dict(arrowstyle='->', lw=0.8, color='#AAAAAA', linestyle=':', connectionstyle="arc3,rad=-0.2"))
+    # IO
+    ctx.connect((1.5, 6.8), (6 - layer_widths/2, 6.8), label="User Input")
+    ctx.connect((6 + layer_widths/2, 2.8), (10.5, 2.8), label="Safe Response")
 
-    # Adaptive Elements Box (Right side, spanning L2-L6)
-    # Covering roughly y=1.0 to y=5.8
-    bbox_props = dict(boxstyle="round,pad=0.5", facecolor="#E9F7EF", edgecolor="#2ECC71", alpha=0.9, linewidth=1.5)
-    ax.text(10.2, 3.8, 'Adaptive Elements\n(L2-L4, L6)', 
-            ha='center', va='center', fontsize=10, fontweight='bold', color='#145A32', bbox=bbox_props, zorder=4)
-    ax.text(10.2, 3.4, 'Dynamic thresholds\nRisk assessment', 
-            ha='center', va='top', fontsize=8, color='#145A32', zorder=5)
-
-    # Dashed lines connecting adaptive box to relevant layers (2, 3, 4, 6)
-    relevant_layers_y = [5.5, 4.5, 3.5] # Layers 2, 3, 4
-    for y in relevant_layers_y:
-         ax.annotate('', xy=(9.5, y), xytext=(9.7, 3.8),
-                    arrowprops=dict(arrowstyle='-', lw=1, color='#2ECC71', linestyle=':', alpha=0.6))
-
-    # Title
     ax.text(6, 7.8, 'System-Level Workflow Model for Prompt Injection Mitigation', 
-            ha='center', va='center', fontsize=14, fontweight='bold', color='#222222')
+            ha='center', va='center', fontsize=15, fontweight='bold', color=PALETTE['text'])
     
-    plt.tight_layout()
-    plt.savefig('data/visualizations/architecture_diagram.png')
-    print("Architecture diagram created: data/visualizations/architecture_diagram.png")
+    plt.savefig('visualizations_root/System-Level Workflow Model for Prompt Injection Mitigation_generated.png')
+    print("Layer architecture diagram refined.")
     plt.close()
 
 def create_asr_comparison_chart():
     """Create the attack success rate comparison chart."""
     # Precise data from paper
-    configurations = ['Baseline\n(No Defense)', 'Isolated\n(L1-L5)', 'Adaptive\nL3 Only', 'Adaptive\nL4 Only', 'Full\nAdaptive']
-    asr_values = [80.77, 21.83, 20.12, 18.52, 18.67] 
+    configurations = ['Baseline\n(No Defense)', 'L3 Only\n(Isolation)', 'L5 Only\n(Validation)', 'Full Stack\n(Coordinated)']
+    asr_values = [4.19, 37.4, 2.6, 0.00] 
     
-    # 95% Confidence Intervals (margin of error)
-    # Derived from Wilson score interval width for ~11k samples
-    # Approximate width for 20% is ~0.7-0.8%, for 80% is ~0.7%
-    # Using reasonably representative values for visual accuracy
-    errors = [0.73, 0.76, 0.74, 0.72, 0.72] 
+    # 95% Confidence Intervals (Wilson Score)
+    # 4.19% [2.66, 6.52] -> ~1.9 error
+    # 37.4% [~36.5, ~38.3] -> ~0.9 error
+    # 2.6% [~2.3, ~2.9] -> ~0.3 error
+    # 0.0% [0.0, 0.71] -> ~0.7 error
+    errors = [1.9, 0.9, 0.3, 0.71] 
     
     fig, ax = plt.subplots(figsize=(10, 6))
     sns.set_style("whitegrid")
@@ -160,15 +176,15 @@ def create_asr_comparison_chart():
     sns.despine()
     
     plt.tight_layout()
-    plt.savefig('data/visualizations/asr_comparison_chart.png')
-    print("ASR comparison chart created: data/visualizations/asr_comparison_chart.png")
+    plt.savefig('visualizations_root/asr_comparison_chart_generated.png')
+    print("ASR comparison chart created: visualizations_root/asr_comparison_chart_generated.png")
     plt.close()
 
 def create_bypass_mechanisms_viz():
     """Create the bypass mechanism analysis visualization (Pie + Bar)."""
     # Data
-    mechanisms = ['Output Leakage', 'Semantic Detection\nBypass', 'LLM Constraint\nViolation']
-    counts = [959, 400, 114]
+    mechanisms = ['Output Leakage', 'Semantic Evasion\n(Stealth)', 'Constraint\nViolations']
+    counts = [1080, 1471, 126]  # Based on 9.4%, 12.8%, 1.1% of 11,490
     total_bypass = sum(counts)
     
     # Calculate percentages
@@ -214,85 +230,78 @@ def create_bypass_mechanisms_viz():
     sns.despine(ax=ax2)
     
     plt.tight_layout(rect=[0, 0.03, 1, 0.95])
-    plt.savefig('data/visualizations/bypass_mechanisms.png')
-    print("Bypass mechanisms viz created: data/visualizations/bypass_mechanisms.png")
+    plt.savefig('visualizations_root/bypass_mechanisms.png')
+    print("Bypass mechanisms viz created: visualizations_root/bypass_mechanisms.png")
     plt.close()
 
 def create_layer_effectiveness_flow_qualitative():
     """Create a qualitative layer effectiveness flow (No numbers)."""
     fig, ax = plt.subplots(figsize=(12, 6))
+    ctx = DrawContext(ax)
+    
     ax.set_ylim(0, 5)
     ax.set_xlim(0, 11)
     ax.axis('off')
     
-    layers = ['Request\nBoundary', 'Semantic\nAnalysis', 'Context\nIsolation', 'LLM\nInteraction', 'Output\nValidation']
-    descs = ['Sanitization', 'Pattern Checks', 'Separation', 'Enforcement', 'Leakage Check']
-    qualities = ['High\nEfficiency', 'Med/High\nPrecision', 'Systemic\nSafety', 'Semantic\nControls', 'Final\nSafeguard']
+    layers = [
+        ('Request\nBoundary', 'Sanitization', 'High Efficiency', PALETTE['l1']),
+        ('Semantic\nAnalysis', 'Pattern Checks', 'Med/High Precision', PALETTE['l2']),
+        ('Context\nIsolation', 'Separation', 'Systemic Safety', PALETTE['l3']),
+        ('LLM\nInteraction', 'Enforcement', 'Semantic Controls', PALETTE['l4']),
+        ('Output\nValidation', 'Leakage Check', 'Final Safeguard', PALETTE['l5'])
+    ]
     
-    # Colors matching architecture
-    colors = ['#FFCBCB', '#CCE5FF', '#D5F5E3', '#FDEBD0', '#E8DAEF']
+    # Draw blocks with uniform spacing
+    x_positions = np.linspace(1.5, 9.5, 5)
+    width, height = 1.6, 1.2
     
-    # Draw blocks
-    x_positions = np.linspace(1, 9, 5)
-    
-    for i, (x, name, desc, qual, color) in enumerate(zip(x_positions, layers, descs, qualities, colors)):
-        # Box
-        rect = mpatches.FancyBboxPatch((x-0.8, 2), 1.6, 1.2, 
-                           facecolor=color, edgecolor='#444444', linewidth=1.5, boxstyle="round,pad=0.1")
-        ax.add_patch(rect)
+    centers = []
+    for i, (x, (name, desc, qual, color)) in enumerate(zip(x_positions, layers)):
+        ctx.draw_box(x, 2.8, width, height, name, color, subtitle=desc)
+        ax.text(x, 1.8, qual, ha='center', va='top', fontsize=9, fontweight='bold', color='#455A64')
+        centers.append((x, 2.8))
         
-        # Text
-        ax.text(x, 2.7, name, ha='center', va='center', fontsize=10, fontweight='bold')
-        ax.text(x, 2.3, desc, ha='center', va='center', fontsize=8, style='italic')
-        ax.text(x, 1.6, qual, ha='center', va='top', fontsize=9, fontweight='bold', color='#444444')
-
-    # Arrows
-    for i in range(len(x_positions)-1):
-        x1 = x_positions[i] + 0.8
-        x2 = x_positions[i+1] - 0.8
-        ax.annotate('', xy=(x2, 2.6), xytext=(x1, 2.6),
-                    arrowprops=dict(arrowstyle='->', lw=2, color='#555555'))
+        # Connect to next
+        if i > 0:
+            prev_x = centers[i-1][0] + (width/2)
+            curr_x = x - (width/2)
+            ctx.connect((prev_x, 2.8), (curr_x, 2.8))
     
     # Input/Output
-    ax.text(0, 2.6, 'User\nInput', ha='center', va='center', fontweight='bold')
-    ax.annotate('', xy=(x_positions[0]-0.8, 2.6), xytext=(0.5, 2.6), arrowprops=dict(arrowstyle='->', lw=2))
-    
-    ax.text(10.8, 2.6, 'Safe\nOutput', ha='center', va='center', fontweight='bold')
-    ax.annotate('', xy=(10.4, 2.6), xytext=(x_positions[-1]+0.8, 2.6), arrowprops=dict(arrowstyle='->', lw=2))
+    ctx.connect((0.2, 2.8), (centers[0][0] - width/2, 2.8), label='User Input')
+    ctx.connect((centers[-1][0] + width/2, 2.8), (10.8, 2.8), label='Safe Output')
 
-    # Title
-    ax.text(5.5, 4.5, 'Qualitative Defense Effectiveness Flow', ha='center', va='center', fontsize=14, fontweight='bold')
-    ax.text(5.5, 4.2, 'Risk reduction profile across defense layers', ha='center', va='center', fontsize=10, style='italic')
+    ax.text(5.5, 4.5, 'Qualitative Defense Effectiveness Flow', ha='center', va='center', fontsize=15, fontweight='bold')
+    ax.text(5.5, 4.1, 'Cumulative risk reduction across coordinated defense layers', ha='center', va='center', fontsize=10, style='italic')
     
-    plt.tight_layout()
-    plt.savefig('data/visualizations/layer_effectiveness_flow.png')
-    print("Layer effectiveness qualitative flow created: data/visualizations/layer_effectiveness_flow.png")
+    plt.savefig('visualizations_root/layer_effectiveness_flow_generated.png')
+    print("Layer effectiveness qualitative flow refined.")
     plt.close()
 
 def create_statistical_significance_forest():
     """Create the statistical significance visualization (Forest Plot)."""
-    # Updated text to match strict paper numbers
-    configs = ['Isolated', 'Adaptive L3', 'Adaptive L4', 'Full Adaptive']
-    asr_values = [21.83, 20.12, 18.52, 18.67] # Precise
+    # Updated to match strict paper numbers
+    configs = ['Baseline', 'L3 Only', 'L5 Only', 'Full Stack']
+    asr_values = [4.19, 37.4, 2.6, 0.00] 
     
-    # Calculate improvements relative to Isolated (21.83)
-    baseline = 21.83
-    improvements_abs = [baseline - val for val in asr_values[1:]]
-    improvements_rel = [(baseline - val) / baseline * 100 for val in asr_values[1:]]
+    # Wilson Score Intervals
+    ci_err = [1.9, 0.9, 0.3, 0.71] 
     
-    # CIs (approximate symmetric for display)
-    ci_err = 0.75 
+    # Calculate improvements relative to Baseline (4.19)
+    baseline_val = 4.19
+    improvements_rel = [(baseline_val - val) / baseline_val * 100 for val in asr_values[1:]]
     
     fig, ax = plt.subplots(figsize=(10, 6))
-    
     y_pos = np.arange(len(configs))
     
     # Forest plot points
+    # Increased markersize and linewidths to make tiny CIs (L5/Full Stack) more visible
     ax.errorbar(asr_values, y_pos, xerr=ci_err, fmt='o', 
-                markersize=8, capsize=5, color='#2874A6', ecolor='#2874A6', elinewidth=2)
+                markersize=10, capsize=8, color='#2874A6', ecolor='#2874A6', 
+                elinewidth=3, markeredgewidth=2)
     
-    # Reference Line (Isolated Baseline)
-    ax.axvline(x=21.83, color='#E74C3C', linestyle='--', alpha=0.6, label='Isolated Baseline (21.83%)')
+    # Reference Line (Baseline)
+    ax.axvline(x=4.19, color='#E74C3C', linestyle='--', alpha=0.6, label='Baseline (4.19%)')
     
     # Labels
     ax.set_yticks(y_pos)
@@ -302,119 +311,148 @@ def create_statistical_significance_forest():
     ax.invert_yaxis() # Top-down
     
     # Add value annotations
-    for i, (val, imp_rel) in enumerate(zip(asr_values, [0] + improvements_rel)):
+    for i, val in enumerate(asr_values):
         if i == 0:
-            ax.text(val + 1, i, f'{val:.2f}%', va='center', fontweight='bold')
+            # Move baseline text significantly left to ensure no overlap even with larger caps
+            ax.text(val - 4.5, i, f'{val:.2f}%', va='center', ha='right', fontweight='bold')
         else:
-            ax.text(val + 1, i, f'{val:.2f}% (↓{imp_rel:.1f}%)', va='center', fontweight='bold', color='#196F3D')
+            imp_rel = improvements_rel[i-1]
+            color = '#196F3D' if imp_rel >= 0 else '#C0392B'
+            sign = '↓' if imp_rel >= 0 else '↑'
+            # Move labels slightly further to ensure they don't touch the error bars
+            ax.text(val + 4.5, i, f'{val:.2f}% ({sign}{abs(imp_rel):.1f}%)', va='center', fontweight='bold', color=color)
 
-    ax.set_xlim(16, 24)
+    ax.set_xlim(-15, 60) # Expanded range to give text more breathing room
     ax.grid(axis='x', alpha=0.3)
-    ax.legend(loc='lower left')
+    ax.legend(loc='upper right', frameon=True, framealpha=0.9)
     
     plt.tight_layout()
-    plt.savefig('data/visualizations/statistical_significance_analysis.png')
-    print("Statistical significance forest plot created: data/visualizations/statistical_significance_analysis.png")
+    plt.savefig('visualizations_root/statistical_significance_analysis.png')
+    print("Statistical significance forest plot created: visualizations_root/statistical_significance_analysis.png")
     plt.close()
 
 def create_attack_mitigated_flow():
     """Create the Attack Flow vs Mitigated Flow comparison diagram."""
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 10), height_ratios=[1, 1.2])
     
-    # Common settings
-    for ax in [ax1, ax2]:
-        ax.set_xlim(0, 12)
-        ax.set_ylim(0, 4)
-        ax.axis('off')
+    # Vulnerable Flow
+    ctx1 = DrawContext(ax1)
+    ax1.set_xlim(0, 12)
+    ax1.set_ylim(0, 4)
+    ax1.axis('off')
+    ax1.text(6, 3.5, "UNPROTECTED FLOW (High Success Rate)", ha='center', va='center', 
+             fontsize=12, fontweight='bold', color=PALETTE['danger'])
     
-    # --- Top: Vulnerable Process ---
-    ax1.set_title('Top: Vulnerable process susceptible to prompt injection', 
-                 fontsize=14, fontweight='bold', pad=20, loc='left')
-    
-    # Nodes for vulnerable flow
     vuln_nodes = [
-        (1.5, 'Malicious\nUser Input', '#E74C3C'), # Red
-        (5.0, 'Application\n(No Validation)', '#F5B041'), # Orange
-        (8.5, 'LLM\n(Direct Access)', '#E74C3C'), 
-        (11.0, 'Executed\nAttack', '#922B21') # Dark Red
+        (2.0, 'Malicious Input', PALETTE['l1']),
+        (5.5, 'Application Layer', PALETTE['l4']),
+        (9.0, 'Direct LLM Access', PALETTE['danger'])
     ]
     
-    # Draw nodes
+    v_width = 2.2
+    v_centers = []
     for x, text, color in vuln_nodes:
-        # Use simple box for top flow
-        box = mpatches.FancyBboxPatch((x-1.0, 1.5), 2.0, 1.0,
-                                    facecolor=color, edgecolor='#333333',
-                                    boxstyle="round,pad=0.1", alpha=0.3)
-        ax1.add_patch(box)
-        ax1.text(x, 2.0, text, ha='center', va='center', fontweight='bold', fontsize=10)
-
-    # Arrows (Red)
-    ax1.annotate('', xy=(3.8, 2.0), xytext=(2.7, 2.0), arrowprops=dict(arrowstyle='->', lw=2, color='#C0392B'))
-    ax1.annotate('', xy=(7.3, 2.0), xytext=(6.2, 2.0), arrowprops=dict(arrowstyle='->', lw=2, color='#C0392B'))
-    ax1.annotate('', xy=(10.8, 2.0), xytext=(9.7, 2.0), arrowprops=dict(arrowstyle='->', lw=2, color='#C0392B'))
-    ax1.text(6, 3.2, "UNPROTECTED FLOW", ha='center', va='center', fontsize=12, fontweight='bold', color='#C0392B')
-
-
-    # --- Bottom: Mitigated Flow ---
-    ax2.set_title('Bottom: Mitigated flow with multi-layer defense', 
-                 fontsize=14, fontweight='bold', pad=20, loc='left')
-    
-    # Defense Layers (Simplified horizontal view)
-    layers = [
-        (1.5, 'Layer 1:\nBoundary', '#CCE5FF'),
-        (3.5, 'Layer 2:\nSemantic', '#D5F5E3'),
-        (5.5, 'Layer 3:\nContext', '#FDEBD0'),
-        (7.5, 'Layer 4:\nLLM', '#E8DAEF'),
-        (9.5, 'Layer 5:\nOutput Validation', '#FFCBCB') # Combined label as requested
-    ]
-    
-    # Draw logic
-    
-    # 1. User Input
-    ax2.text(0.0, 2.0, 'User\nInput', ha='center', va='center', fontweight='bold')
-    ax2.annotate('', xy=(0.8, 2.0), xytext=(0.2, 2.0), arrowprops=dict(arrowstyle='->', lw=1.5))
-
-    # 2. Layers
-    for x, text, color in layers:
-        box = mpatches.FancyBboxPatch((x-0.8, 1.5), 1.6, 1.0,
-                                    facecolor=color, edgecolor='#444444',
-                                    boxstyle="round,pad=0.1", alpha=0.9)
-        ax2.add_patch(box)
-        ax2.text(x, 2.0, text, ha='center', va='center', fontsize=9, fontweight='bold')
+        ctx1.draw_box(x, 2.0, v_width, 1.0, text, color)
+        v_centers.append((x, 2.0))
         
-        # Connectors
-        if x < 9.5:
-            ax2.annotate('', xy=(x+1.0, 2.0), xytext=(x+0.8, 2.0), arrowprops=dict(arrowstyle='->', lw=1.5, color='#444444'))
-
-    # 3. Safe Output
-    ax2.annotate('', xy=(11.5, 2.0), xytext=(10.5, 2.0), arrowprops=dict(arrowstyle='->', lw=1.5, color='#2ECC71'))
-    ax2.text(11.8, 2.0, 'Safe\nOutput', ha='center', va='center', fontweight='bold', color='#145A32')
+    for i in range(len(v_centers)-1):
+        ctx1.connect((v_centers[i][0] + v_width/2, 2.0), (v_centers[i+1][0] - v_width/2, 2.0), color=PALETTE['danger'])
     
-    # Layer 6 Coordination context (Background box)
-    coord_box = mpatches.FancyBboxPatch((0.5, 0.5), 10.0, 3.0,
-                                      facecolor='#FEF9E7', edgecolor='#F1C40F',
-                                      boxstyle="round,pad=0.2", alpha=0.3, zorder=-1, linestyle='--')
-    ax2.add_patch(coord_box)
-    ax2.text(5.5, 0.3, 'Layer 6: Continuous Feedback & Coordination', ha='center', va='center', 
-             fontsize=10, style='italic', color='#B7950B')
+    ctx1.connect((v_centers[-1][0] + v_width/2, 2.0), (11.5, 2.0), label="Attack Success", color=PALETTE['danger'])
 
-    plt.tight_layout()
-    plt.savefig('data/visualizations/Attack Flow vs Mitigated Flow_generated.png')
-    print("Attack vs Mitigated Flow diagram created: data/visualizations/Attack Flow vs Mitigated Flow_generated.png")
+    # Mitigated Flow
+    ctx2 = DrawContext(ax2)
+    ax2.set_xlim(0, 12)
+    ax2.set_ylim(0, 4)
+    ax2.axis('off')
+    ax2.text(6, 3.5, "MITIGATED FLOW (0.0% Success Rate)", ha='center', va='center', 
+             fontsize=12, fontweight='bold', color='#2E7D32')
+
+    # Simplified layer view
+    m_layers = [
+        (2.0, 'Boundary', PALETTE['l1']),
+        (4.5, 'Semantic / Context', PALETTE['l2']),
+        (7.5, 'Safe LLM Interaction', PALETTE['l4']),
+        (10.0, 'Filtered Output', PALETTE['l5'])
+    ]
+    m_width = 2.0
+    m_centers = []
+    for x, text, color in m_layers:
+        ctx2.draw_box(x, 2.0, m_width, 1.0, text, color)
+        m_centers.append((x, 2.0))
+        
+    for i in range(len(m_centers)-1):
+        ctx2.connect((m_centers[i][0] + m_width/2, 2.0), (m_centers[i+1][0] - m_width/2, 2.0), color='#2E7D32')
+        
+    ctx2.connect((0.2, 2.0), (m_centers[0][0] - m_width/2, 2.0))
+    ctx2.connect((m_centers[-1][0] + m_width/2, 2.0), (11.5, 2.0), label="Safe Outcome", color='#2E7D32')
+
+    # L6 Context Box
+    rect = mpatches.FancyBboxPatch((0.5, 0.4), 11, 2.8, boxstyle="round,pad=0.1", 
+                                   facecolor=PALETTE['l6'], edgecolor=PALETTE['border'], 
+                                   linewidth=1, linestyle='--', alpha=0.2, zorder=-1)
+    ax2.add_patch(rect)
+    ax2.text(6, 0.6, 'Layer 6: Coordination & Real-time Refinement', ha='center', va='center', 
+             fontsize=10, style='italic', color='#7F8C8D')
+
+    plt.savefig('visualizations_root/Attack Flow vs Mitigated Flow_generated.png')
+    print("Attack vs Mitigated Flow diagram refined.")
+    plt.close()
+
+def create_context_isolation_diagram():
+    """Create the Figure 2 diagram: Context Isolation Architecture."""
+    fig, ax = plt.subplots(figsize=(10, 6))
+    ctx = DrawContext(ax)
+    
+    ax.set_xlim(0, 10)
+    ax.set_ylim(0, 6)
+    ax.axis('off')
+    
+    # Left Side: Input Origins
+    ctx.draw_box(2, 4.5, 3, 1.0, "Trusted Instructions", PALETTE['l3'], subtitle="Fixed System Prompts")
+    ctx.draw_box(2, 2.0, 3, 1.0, "User-Controlled Input", PALETTE['l1'], subtitle="Untrusted Semantic Payload")
+    
+    # Right Side: Isolation Layer
+    # Move title to top of container to avoid overlap with internal slots
+    ctx.draw_box(7, 3.25, 4, 3.5, "L3 isolation Boundary", PALETTE['l3'], 
+                 subtitle="Architectural Segregation", linestyle='--', title_y_offset=1.5)
+    
+    # Inside L3: Slots
+    ctx.draw_box(7, 4.3, 3, 0.6, "Protected Instruction Segment", '#A5D6A7')
+    ctx.draw_box(7, 3.25, 3, 0.6, "Constraint Enforcement", '#FFF59D')
+    ctx.draw_box(7, 2.2, 3, 0.6, "Data Interaction Segment", '#FFE082')
+    
+    # Connections
+    ctx.connect((3.5, 4.5), (5.5, 4.3))
+    ctx.connect((3.5, 2.0), (5.5, 2.2))
+    
+    # Central Enforcement Arrow
+    ctx.connect((7, 3.9), (7, 3.6), color=PALETTE['border'])
+    ctx.connect((7, 2.6), (7, 2.9), color=PALETTE['border'])
+    
+    # Final Output
+    ctx.connect((9, 3.25), (11, 3.25), label="Safe Request Context")
+
+    ax.text(5, 5.5, 'Context Isolation Architecture (Layer 3)', ha='center', va='center', 
+             fontsize=14, fontweight='bold', color=PALETTE['text'])
+    
+    plt.savefig('visualizations_root/Context Isolation Architecture (Layer 3)_generated.png')
+    print("Context isolation diagram refined.")
     plt.close()
 
 def main():
     """Main function to create all visualizations."""
-    viz_dir = Path('data/visualizations')
+    viz_dir = Path('visualizations_root')
     viz_dir.mkdir(parents=True, exist_ok=True)
     
     print("Creating refined visualizations...")
-    create_architecture_diagram()
-    create_asr_comparison_chart()
-    create_bypass_mechanisms_viz()
-    create_layer_effectiveness_flow_qualitative()
-    create_statistical_significance_forest()
-    create_attack_mitigated_flow()
+    create_architecture_diagram() # Figure 1
+    create_context_isolation_diagram() # Figure 2
+    create_attack_mitigated_flow() # Figure 3
+    create_asr_comparison_chart() # Figure 4
+    create_bypass_mechanisms_viz() # Figure 5
+    create_statistical_significance_forest() # Figure 6
+    create_layer_effectiveness_flow_qualitative() # Figure 7
     print("All visualizations created.")
 
 if __name__ == "__main__":

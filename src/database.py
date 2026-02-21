@@ -31,6 +31,8 @@ class Database:
         """Create database tables if they don't exist."""
         self.conn = sqlite3.connect(self.db_path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
+        # Enable WAL mode for better concurrent read/write performance
+        self.conn.execute("PRAGMA journal_mode=WAL")
         
         cursor = self.conn.cursor()
         
@@ -276,3 +278,12 @@ class Database:
         if self.conn:
             self.conn.close()
             logger.info("Database connection closed")
+
+    def __enter__(self):
+        """Support `with Database(...) as db:` pattern."""
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """Ensure the connection is always closed on exit."""
+        self.close()
+        return False  # Do not suppress exceptions

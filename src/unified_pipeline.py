@@ -8,13 +8,8 @@ This module provides a unified interface that can handle:
 - Isolation mode comparisons
 """
 
-import sys
-from pathlib import Path
-from typing import Optional, Literal, Dict, Any
-from datetime import datetime
-
 # Add src to path
-sys.path.insert(0, str(Path(__file__).parent / "src"))
+sys.path.insert(0, str(Path(__file__).parent))
 
 from src.pipeline import DefensePipeline as OriginalDefensePipeline
 from adaptive_pipeline import AdaptiveDefensePipeline
@@ -80,8 +75,13 @@ class UnifiedDefensePipeline:
             }
             
             self.pipeline_type = "adaptive"
+            # Fix initialization safely
+            system_prompt_content = "You are a helpful assistant."
+            if config and hasattr(config, 'system_prompt') and config.system_prompt:
+                system_prompt_content = getattr(config.system_prompt, 'content', "You are a helpful assistant.")
+            
             self.pipeline = AdaptiveDefensePipeline(
-                system_prompt=getattr(config, 'system_prompt', '').content if config else "You are a helpful assistant.",
+                system_prompt=system_prompt_content,
                 isolation_mode=isolation_mode,
                 coordination_config=coord_config
             )
@@ -133,26 +133,21 @@ class UnifiedDefensePipeline:
                 
         else:
             # Use basic pipeline with process method
+            # FIXED: Removed invalid kwargs coordination_enabled and layer3_isolation_mode
             trace = self.pipeline.process(
                 request,
                 isolation_mode=self.isolation_mode,
-                experiment_id=experiment_id,
-                coordination_enabled=self.coordination_enabled,
-                layer3_isolation_mode=self.isolation_mode  # Use the specified isolation mode
+                experiment_id=experiment_id
             )
         
         # Ensure critical_failure_analysis exists for compatibility with 6B/6C
         if not hasattr(trace, 'critical_failure_analysis') or trace.critical_failure_analysis is None:
-            # Create a basic critical failure analysis
-            trace.critical_failure_analysis = {
+            # The model field is critical_failure_point, but analysis often uses this key
+            trace.critical_failure_point = {
                 "critical_failure_point": getattr(trace, 'blocked_at_layer', None),
                 "reason": "First layer that failed to block attack" if getattr(trace, 'attack_successful', False) else "No critical failure - attack blocked",
                 "risk_score": max([step.get('risk_score', 0) for step in getattr(trace, 'propagation_path', [])], default=0)
             }
-        
-        # Ensure critical_failure_point exists for database compatibility
-        if not hasattr(trace, 'critical_failure_point'):
-            trace.critical_failure_point = trace.critical_failure_analysis
         
         return trace
     

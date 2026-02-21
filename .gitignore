@@ -47,3 +47,21 @@ htmlcov/
 
 # MyPy
 .mypy_cache/
+
+# Environment secrets
+.env
+
+# Databases
+data/*.db
+!data/.gitkeep
+
+# Agent Artifacts
+.agent/
+
+# Paper Artifacts
+visualizations_root/
+Research_Paper_v2.md
+*.docx
+
+# Deprecated Docs
+docs/

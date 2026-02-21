@@ -228,8 +228,13 @@ class AdaptiveDefensePipeline:
                     coordination_context["layer4_enhanced_monitoring"] = True
             
             # FIXED: Pass enhanced_monitoring appropriately
+            if isolated_context is None:
+                logger.warning(
+                    f"Request {request.request_id}: Layer 3 disabled or produced no isolated context. "
+                    "Layer 4 will run WITHOUT system prompt isolation — this is a reduced-security configuration."
+                )
             layer4_result, llm_response = self.layer4.interact(
-                request, 
+                request,
                 isolated_context or {"messages": [{"role": "user", "content": request.user_input}]},
                 enhanced_monitoring=enhanced_monitoring
             )
@@ -328,5 +333,9 @@ class AdaptiveDefensePipeline:
             timestamp=datetime.now(),
             layer_results=layer_results,
             coordination_enabled=self.coordination_config.get("enabled", False),
-            coordination_context=coordination_context
+            coordination_context=coordination_context,
+            propagation_path=propagation_path,
+            bypass_mechanisms=bypass_mechanisms,
+            trust_boundary_violations=trust_boundary_violations,
+            critical_failure_point=critical_failure
         )

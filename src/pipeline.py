@@ -91,7 +91,7 @@ class DefensePipeline:
                 layer1_result = self.layer1.validate(request)
                 layer_results.append(layer1_result)
                 
-                if not layer1_result.passed:
+                if not layer1_result.passed and "layer_error" not in layer1_result.flags:
                     violation_detected = True
                     blocked_at_layer = "Layer1_Boundary"
                     final_output = "BLOCKED: Input validation failed"
@@ -114,7 +114,7 @@ class DefensePipeline:
                 layer2_result = self.layer2.analyze(request)
                 layer_results.append(layer2_result)
                 
-                if not layer2_result.passed:
+                if not layer2_result.passed and "layer_error" not in layer2_result.flags:
                     violation_detected = True
                     blocked_at_layer = "Layer2_Semantic"
                     final_output = "BLOCKED: Semantic attack detected"
@@ -171,7 +171,7 @@ class DefensePipeline:
                 )
                 layer_results.append(layer4_result)
                 
-                if not layer4_result.passed:
+                if not layer4_result.passed and "generation_error" not in layer4_result.flags and "layer_error" not in layer4_result.flags:
                     violation_detected = True
                     blocked_at_layer = "Layer4_LLM"
                     final_output = llm_response  # Contains block message
@@ -199,7 +199,7 @@ class DefensePipeline:
                 )
                 layer_results.append(layer5_result)
                 
-                if not layer5_result.passed:
+                if not layer5_result.passed and "layer_error" not in layer5_result.flags:
                     violation_detected = True
                     blocked_at_layer = "Layer5_Output"
                     final_output = "BLOCKED: Output validation failed"

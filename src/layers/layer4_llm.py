@@ -7,10 +7,11 @@ optionally applies guardrail checks before/after generation.
 
 import logging
 import time
-from typing import Optional, Dict, List, Any
 from pathlib import Path
 import sys
+from typing import Optional, Dict, Any, List, Tuple
 
+# Add src directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from openai import OpenAI, APIConnectionError, APIStatusError
@@ -142,7 +143,7 @@ class Layer4LLMInteraction:
         # ── Pre-generation guardrail ─────────────────────────────────
         if use_guardrails:
             guardrail_passed, guardrail_reason = self._apply_guardrails(
-                messages, stage="pre"
+                messages, stage="pre", user_input=request.user_input
             )
             flags.append("guardrails_pre")
             annotations["guardrail_pre_result"] = guardrail_passed
@@ -288,22 +289,30 @@ class Layer4LLMInteraction:
     def _apply_guardrails(
         self,
         content: Any,
-        stage: str,
-    ) -> tuple[bool, str]:
+        stage: str = "pre",
+        user_input: Optional[str] = None
+    ) -> Tuple[bool, str]:
         """
-        Apply guardrail checks using a secondary LLM call.
+        Apply LLM-based guardrails to input or output.
 
         Args:
-            content: Messages list (pre) or response string (post).
-            stage: "pre" (before generation) or "post" (after generation).
+            content: The content to check (messages list for pre, string for post)
+            stage: "pre" or "post" generation
+            user_input: Explicit user input to check (bypass formatted messages)
 
         Returns:
             (passed, reason)
         """
+        if not self.use_guardrails:
+            return True, ""
+
         try:
             if stage == "pre":
-                # Extract user content from messages list
-                if isinstance(content, list):
+                # Use explicit user_input if provided (preferred for isolated runs)
+                if user_input:
+                    user_content = user_input
+                # Fallback: extract user content from messages list
+                elif isinstance(content, list):
                     user_content = next(
                         (m["content"] for m in content if m.get("role") == "user"),
                         "",

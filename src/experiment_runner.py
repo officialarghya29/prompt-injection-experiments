@@ -14,10 +14,11 @@ import logging
 import time
 import json
 import random
+import concurrent.futures
 from typing import List, Dict, Any, Optional
 from pathlib import Path
 import sys
-
+# Add src directory to path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from models import RequestEnvelope, ExecutionTrace
@@ -28,7 +29,7 @@ from data.attack_prompts import ATTACK_PROMPTS, BENIGN_PROMPTS
 from statistical_analysis import (
     wilson_score_interval,
     aggregate_trial_results,
-    mcnemar_test_from_results,
+    calculate_mcnemar_test,
     compare_configurations,
     format_asr_with_ci
 )
@@ -54,7 +55,10 @@ class ExperimentRunner:
         config: Optional[Config] = None, 
         db_path: Optional[str] = None,
         n_trials: int = 1,
-        random_seed: Optional[int] = None
+        random_seed: Optional[int] = None,
+        max_workers: int = 1,
+        attack_prompts: Optional[Dict[str, Any]] = None,
+        benign_prompts: Optional[Dict[str, Any]] = None
     ):
         """
         Initialize experiment runner.
@@ -64,30 +68,40 @@ class ExperimentRunner:
             db_path: Path to database
             n_trials: Number of randomized trials to run per configuration
             random_seed: Random seed for reproducibility (None = random)
+            max_workers: Maximum number of parallel workers for trials
         """
         self.config = config or Config.get()
         self.db = Database(db_path or "experiments.db")
         self.n_trials = n_trials
+        self.random_seed = random_seed
+        self.max_workers = max_workers
         
         # Set random seed for reproducibility
-        if random_seed is not None:
-            random.seed(random_seed)
-            logger.info(f"Random seed set to: {random_seed}")
+        if self.random_seed is not None:
+            random.seed(self.random_seed)
+            logger.info(f"Random seed set to: {self.random_seed}")
         
         # Load prompts
-        self.attack_prompts = ATTACK_PROMPTS
-        self.benign_prompts = BENIGN_PROMPTS
+        self.attack_prompts = attack_prompts if attack_prompts is not None else ATTACK_PROMPTS
+        self.benign_prompts = benign_prompts if benign_prompts is not None else BENIGN_PROMPTS
         
         logger.info(
             f"ExperimentRunner initialized: "
             f"{len(self.attack_prompts)} attack prompts, "
             f"{len(self.benign_prompts)} benign prompts, "
-            f"{n_trials} trial(s) per configuration"
+            f"{self.n_trials} trial(s) per configuration"
         )
+    
+    def __enter__(self):
+        return self
+    
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if hasattr(self, 'db') and self.db:
+            self.db.close()
     
     def _run_configuration_with_trials(
         self,
-        config_name: str,
+        config_label: str,
         test_function,
         **kwargs
     ) -> Dict[str, Any]:
@@ -95,7 +109,7 @@ class ExperimentRunner:
         Run a single configuration multiple times with randomization.
         
         Args:
-            config_name: Name of the configuration
+            config_label: Label for the configuration for logging
             test_function: Function that runs one trial and returns metrics
             **kwargs: Additional arguments to pass to test_function
             
@@ -104,61 +118,171 @@ class ExperimentRunner:
         """
         if self.n_trials == 1:
             # Single trial mode - backward compatible
-            return test_function(trial_num=1, **kwargs)
+            # Must still provide default orders for consistency
+            return test_function(
+                trial_num=1,
+                attack_order=list(self.attack_prompts.keys()),
+                benign_order=list(self.benign_prompts.keys()),
+                **kwargs
+            )
         
         # Multiple trials with randomization
         logger.info(f"\n{'='*60}")
-        logger.info(f"Running {config_name} with {self.n_trials} randomized trials")
+        logger.info(f"Running {config_label} with {self.n_trials} randomized trials (Workers: {self.max_workers})")
         logger.info(f"{'='*60}")
         
         trial_results = []
         
-        for trial_num in range(1, self.n_trials + 1):
-            logger.info(f"\nTrial {trial_num}/{self.n_trials}...")
-            
-            # Shuffle attack order for this trial
-            attack_order = list(self.attack_prompts.keys())
-            random.shuffle(attack_order)
-            
-            benign_order = list(self.benign_prompts.keys())
-            random.shuffle(benign_order)
-            
-            # Run this trial
-            trial_result = test_function(
-                trial_num=trial_num,
-                attack_order=attack_order,
-                benign_order=benign_order,
-                **kwargs
-            )
-            
-            trial_results.append(trial_result)
-            
-            # Log trial summary
-            metrics = trial_result.get("metrics", {})
-            asr = metrics.get("attack_success_rate", 0)
-            fpr = metrics.get("false_positive_rate", 0)
-            logger.info(
-                f"Trial {trial_num} complete: ASR={asr:.1%}, FPR={fpr:.1%}"
-            )
+        def _execute_trial(trial_num):
+            try:
+                # Use a specific seed offset for each trial to ensure variety in parallel runs
+                # but reproducibility if global seed is set
+                trial_seed = self.random_seed + trial_num if self.random_seed is not None else None
+                if trial_seed:
+                    random.seed(trial_seed)
+                
+                logger.info(f"Starting Trial {trial_num}/{self.n_trials}...")
+                
+                # Shuffle attack order for this trial
+                attack_order = list(self.attack_prompts.keys())
+                random.shuffle(attack_order)
+                
+                benign_order = list(self.benign_prompts.keys())
+                random.shuffle(benign_order)
+                
+                # Run this trial
+                result = test_function(
+                    trial_num=trial_num,
+                    attack_order=attack_order,
+                    benign_order=benign_order,
+                    **kwargs
+                )
+                
+                # Log completion
+                metrics = result.get("metrics", {})
+                logger.info(
+                    f"Trial {trial_num} complete: ASR={metrics.get('attack_success_rate', 0):.1%}, "
+                    f"FPR={metrics.get('false_positive_rate', 0):.1%}"
+                )
+                return result
+            except Exception as e:
+                logger.error(f"Error in Trial {trial_num}: {e}", exc_info=True)
+                raise
+        
+        # Execute trials
+        if self.max_workers > 1:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+                futures = {executor.submit(_execute_trial, t): t for t in range(1, self.n_trials + 1)}
+                for future in concurrent.futures.as_completed(futures):
+                    trial_results.append(future.result())
+        else:
+            for trial_num in range(1, self.n_trials + 1):
+                trial_results.append(_execute_trial(trial_num))
+        
+        # Sort results by trial number for consistency
+        trial_results.sort(key=lambda x: x.get("trial_num", 0))
         
         # Aggregate across trials
         logger.info(f"\nAggregating {self.n_trials} trials...")
         aggregated = aggregate_trial_results(trial_results)
         
         # Add configuration metadata
-        aggregated["config_name"] = config_name
+        aggregated["config_name"] = config_label
         aggregated["trials_completed"] = self.n_trials
         
         # Log summary with confidence interval
         pooled_asr = aggregated["pooled_asr"]
         ci = aggregated["confidence_interval_95"]
         logger.info(
-            f"{config_name} Summary: "
+            f"{config_label} Summary: "
             f"ASR={pooled_asr:.1%} (95% CI: {ci['lower']:.1%}–{ci['upper']:.1%})"
         )
         
         return aggregated
     
+    def _run_experiment_1_trial(
+        self,
+        trial_num: int,
+        attack_order: List[str],
+        benign_order: List[str],
+        layer_config: Dict[str, Any],
+        experiment_id: str,
+        version_name: str
+    ) -> Dict[str, Any]:
+        """Run a single trial for Experiment 1."""
+        pipeline = DefensePipeline(self.config)
+        pipeline.configure_layers(**layer_config)
+        
+        trial_results = {
+            "attack_results": [],
+            "benign_results": [],
+        }
+        
+        # Test attacks in randomized order
+        for attack_id in attack_order:
+            attack_data = self.attack_prompts[attack_id]
+            request = RequestEnvelope(
+                user_input=attack_data["text"],
+                attack_label=attack_data["type"]
+            )
+            
+            trace = pipeline.process(
+                request,
+                isolation_mode="good",
+                experiment_id=f"{experiment_id}_{version_name}_t{trial_num}"
+            )
+            
+            self.db.save_execution_trace(trace)
+            
+            trial_results["attack_results"].append({
+                "attack_id": attack_id,
+                "attack_type": attack_data["type"],
+                "attack_successful": trace.attack_successful,
+                "blocked_at_layer": trace.blocked_at_layer,
+                "violation_detected": trace.violation_detected,
+                "latency_ms": trace.total_latency_ms,
+            })
+            
+        # Test benign prompts in randomized order
+        for benign_id in benign_order:
+            benign_data = self.benign_prompts[benign_id]
+            request = RequestEnvelope(
+                user_input=benign_data["text"],
+                attack_label=None
+            )
+            
+            trace = pipeline.process(
+                request,
+                isolation_mode="good",
+                experiment_id=f"{experiment_id}_{version_name}_t{trial_num}"
+            )
+            
+            self.db.save_execution_trace(trace)
+            
+            trial_results["benign_results"].append({
+                "benign_id": benign_id,
+                "false_positive": trace.violation_detected,
+                "latency_ms": trace.total_latency_ms,
+            })
+            
+        # Compute metrics for this trial
+        attack_success_rate = sum(
+            1 for r in trial_results["attack_results"] if r["attack_successful"]
+        ) / len(trial_results["attack_results"])
+        
+        false_positive_rate = sum(
+            1 for r in trial_results["benign_results"] if r["false_positive"]
+        ) / len(trial_results["benign_results"])
+        
+        trial_results["metrics"] = {
+            "attack_success_rate": attack_success_rate,
+            "false_positive_rate": false_positive_rate,
+            "total_attacks": len(trial_results["attack_results"]),
+            "total_benign": len(trial_results["benign_results"]),
+        }
+        
+        return trial_results
+
     def run_experiment_1(self) -> Dict[str, Any]:
         """
         Experiment 1: Layer Propagation Across Configurations (RQ1)
@@ -213,103 +337,13 @@ class ExperimentRunner:
         results = {}
         
         for version_name, layer_config in configs.items():
-            logger.info(f"\n--- Testing {version_name} ---")
-            
-            pipeline = DefensePipeline(self.config)
-            pipeline.configure_layers(**layer_config)
-            
-            version_results = {
-                "attack_results": [],
-                "benign_results": [],
-                "config": layer_config,
-            }
-            
-            # Test all attack prompts
-            logger.info(f"Running {len(self.attack_prompts)} attack prompts...")
-            for attack_id, attack_data in self.attack_prompts.items():
-                request = RequestEnvelope(
-                    user_input=attack_data["text"],
-                    attack_label=attack_data["type"]
-                )
-                
-                trace = pipeline.process(
-                    request,
-                    isolation_mode="good",
-                    experiment_id=f"{experiment_id}_{version_name}"
-                )
-                
-                # Save to database
-                self.db.save_execution_trace(trace)
-                
-                version_results["attack_results"].append({
-                    "attack_id": attack_id,
-                    "attack_type": attack_data["type"],
-                    "attack_successful": trace.attack_successful,
-                    "blocked_at_layer": trace.blocked_at_layer,
-                    "violation_detected": trace.violation_detected,
-                    "latency_ms": trace.total_latency_ms,
-                })
-                
-                logger.debug(
-                    f"  {attack_id}: successful={trace.attack_successful}, "
-                    f"blocked_at={trace.blocked_at_layer or 'N/A'}"
-                )
-            
-            # Test benign prompts
-            logger.info(f"Running {len(self.benign_prompts)} benign prompts...")
-            for benign_id, benign_data in self.benign_prompts.items():
-                request = RequestEnvelope(
-                    user_input=benign_data["text"],
-                    attack_label=None
-                )
-                
-                trace = pipeline.process(
-                    request,
-                    isolation_mode="good",
-                    experiment_id=f"{experiment_id}_{version_name}"
-                )
-                
-                self.db.save_execution_trace(trace)
-                
-                version_results["benign_results"].append({
-                    "benign_id": benign_id,
-                    "false_positive": trace.violation_detected,
-                    "latency_ms": trace.total_latency_ms,
-                })
-            
-            # Compute metrics
-            attack_success_rate = sum(
-                1 for r in version_results["attack_results"] if r["attack_successful"]
-            ) / len(version_results["attack_results"])
-            
-            false_positive_rate = sum(
-                1 for r in version_results["benign_results"] if r["false_positive"]
-            ) / len(version_results["benign_results"])
-            
-            avg_attack_latency = sum(
-                r["latency_ms"] for r in version_results["attack_results"]
-            ) / len(version_results["attack_results"])
-            
-            avg_benign_latency = sum(
-                r["latency_ms"] for r in version_results["benign_results"]
-            ) / len(version_results["benign_results"])
-            
-            version_results["metrics"] = {
-                "attack_success_rate": attack_success_rate,
-                "false_positive_rate": false_positive_rate,
-                "avg_attack_latency_ms": avg_attack_latency,
-                "avg_benign_latency_ms": avg_benign_latency,
-                "total_attacks": len(version_results["attack_results"]),
-                "total_benign": len(version_results["benign_results"]),
-            }
-            
-            logger.info(
-                f"{version_name} Results: "
-                f"Attack Success={attack_success_rate:.1%}, "
-                f"False Positive={false_positive_rate:.1%}, "
-                f"Latency={avg_attack_latency:.0f}ms"
+            version_results = self._run_configuration_with_trials(
+                version_name,
+                self._run_experiment_1_trial,
+                layer_config=layer_config,
+                experiment_id=experiment_id,
+                version_name=version_name
             )
-            
             results[version_name] = version_results
         
         logger.info("\n" + "="*80)
@@ -318,6 +352,88 @@ class ExperimentRunner:
         
         return results
     
+    def _run_experiment_2_trial(
+        self,
+        trial_num: int,
+        attack_order: List[str],
+        benign_order: List[str],
+        mode: str,
+        context_attacks: Dict[str, Any],
+        experiment_id: str
+    ) -> Dict[str, Any]:
+        """Run a single trial for Experiment 2."""
+        pipeline = DefensePipeline(self.config)
+        pipeline.configure_layers(
+            enable_layer1=True,
+            enable_layer2=True,
+            enable_layer3=True,
+            enable_layer4=True,
+            enable_layer5=True,
+        )
+        
+        trial_results = {
+            "attack_results": [],
+        }
+        
+        # Test context override attacks in randomized order (only those present in attack_order)
+        filtered_order = [aid for aid in attack_order if aid in context_attacks]
+        
+        for attack_id in filtered_order:
+            attack_data = context_attacks[attack_id]
+            request = RequestEnvelope(
+                user_input=attack_data["text"],
+                attack_label=attack_data["type"]
+            )
+            
+            trace = pipeline.process(
+                request,
+                isolation_mode=mode,
+                experiment_id=f"{experiment_id}_{mode}_t{trial_num}"
+            )
+            
+            self.db.save_execution_trace(trace)
+            
+            # Check if violation was due to boundary issues
+            boundary_violation = any(
+                "violation" in flag or "boundary" in flag
+                for result in trace.layer_results
+                for flag in result.flags
+            )
+            
+            trial_results["attack_results"].append({
+                "attack_id": attack_id,
+                "attack_successful": trace.attack_successful,
+                "boundary_violation": boundary_violation,
+                "blocked_at_layer": trace.blocked_at_layer,
+                "layer3_risk": next(
+                    (r.risk_score for r in trace.layer_results if r.layer_name == "Layer3_Context"),
+                    0.0
+                ),
+            })
+            
+        # Compute metrics for this trial
+        num_attacks = len(trial_results["attack_results"])
+        if num_attacks > 0:
+            attack_success_rate = sum(
+                1 for r in trial_results["attack_results"] if r["attack_successful"]
+            ) / num_attacks
+            
+            boundary_violation_rate = sum(
+                1 for r in trial_results["attack_results"] if r["boundary_violation"]
+            ) / num_attacks
+        else:
+            attack_success_rate = 0.0
+            boundary_violation_rate = 0.0
+            
+        trial_results["metrics"] = {
+            "attack_success_rate": attack_success_rate,
+            "false_positive_rate": 0.0, # Exp 2 doesn't focus on FP
+            "boundary_violation_rate": boundary_violation_rate,
+            "total_attacks": num_attacks,
+        }
+        
+        return trial_results
+
     def run_experiment_2(self) -> Dict[str, Any]:
         """
         Experiment 2: Trust Boundary Violation Analysis (RQ2)
@@ -361,90 +477,13 @@ class ExperimentRunner:
         results = {}
         
         for mode in isolation_modes:
-            logger.info(f"\n--- Testing isolation mode: {mode} ---")
-            
-            pipeline = DefensePipeline(self.config)
-            # Enable all layers for fair comparison
-            pipeline.configure_layers(
-                enable_layer1=True,
-                enable_layer2=True,
-                enable_layer3=True,
-                enable_layer4=True,
-                enable_layer5=True,
+            mode_results = self._run_configuration_with_trials(
+                mode,
+                self._run_experiment_2_trial,
+                mode=mode,
+                context_attacks=context_attacks,
+                experiment_id=experiment_id
             )
-            
-            mode_results = {
-                "attack_results": [],
-                "isolation_mode": mode,
-            }
-            
-            # Test context override attacks
-            for attack_id, attack_data in context_attacks.items():
-                request = RequestEnvelope(
-                    user_input=attack_data["text"],
-                    attack_label=attack_data["type"]
-                )
-                
-                trace = pipeline.process(
-                    request,
-                    isolation_mode=mode,
-                    experiment_id=f"{experiment_id}_{mode}"
-                )
-                
-                self.db.save_execution_trace(trace)
-                
-                # Check if violation was due to boundary issues
-                boundary_violation = any(
-                    "violation" in flag or "boundary" in flag
-                    for result in trace.layer_results
-                    for flag in result.flags
-                )
-                
-                mode_results["attack_results"].append({
-                    "attack_id": attack_id,
-                    "attack_successful": trace.attack_successful,
-                    "boundary_violation": boundary_violation,
-                    "blocked_at_layer": trace.blocked_at_layer,
-                    "layer3_risk": next(
-                        (r.risk_score for r in trace.layer_results if r.layer_name == "Layer3_Context"),
-                        0.0
-                    ),
-                })
-            
-            # Compute metrics (handle empty results)
-            num_attacks = len(mode_results["attack_results"])
-            if num_attacks > 0:
-                attack_success_rate = sum(
-                    1 for r in mode_results["attack_results"] if r["attack_successful"]
-                ) / num_attacks
-                
-                boundary_violation_rate = sum(
-                    1 for r in mode_results["attack_results"] if r["boundary_violation"]
-                ) / num_attacks
-                
-                avg_layer3_risk = sum(
-                    r["layer3_risk"] for r in mode_results["attack_results"]
-                ) / num_attacks
-            else:
-                attack_success_rate = 0.0
-                boundary_violation_rate = 0.0
-                avg_layer3_risk = 0.0
-                logger.warning(f"No context override attacks available for mode {mode}")
-            
-            mode_results["metrics"] = {
-                "attack_success_rate": attack_success_rate,
-                "boundary_violation_rate": boundary_violation_rate,
-                "avg_layer3_risk": avg_layer3_risk,
-                "total_attacks": len(mode_results["attack_results"]),
-            }
-            
-            logger.info(
-                f"{mode.upper()} mode: "
-                f"Success={attack_success_rate:.1%}, "
-                f"Boundary Violations={boundary_violation_rate:.1%}, "
-                f"Avg L3 Risk={avg_layer3_risk:.2f}"
-            )
-            
             results[mode] = mode_results
         
         logger.info("\n" + "="*80)
@@ -453,22 +492,92 @@ class ExperimentRunner:
         
         return results
     
-    def run_experiment_3(self) -> Dict[str, Any]:
-        """
-        Experiment 3: Coordinated vs Isolated Defense (RQ3)
+    def _run_experiment_3_trial(
+        self,
+        trial_num: int,
+        attack_order: List[str],
+        benign_order: List[str],
+        layer_config: Dict[str, Any],
+        experiment_id: str,
+        config_name: str
+    ) -> Dict[str, Any]:
+        """Run a single trial for Experiment 3."""
+        pipeline = DefensePipeline(self.config)
+        pipeline.configure_layers(**layer_config)
         
-        Tests different defense configurations:
-        - D1: Layer 2 only (semantic filtering)
-        - D2: Layer 3 only (context isolation)
-        - D3: Layer 5 only (output validation)
-        - D4: Layers 2+5 (input + output)
-        - D5: Full workflow (all layers)
+        trial_results = {
+            "attack_results": [],
+            "benign_results": [],
+        }
         
-        Returns:
-            Results showing coordination benefits
+        # Test attacks in randomized order
+        for attack_id in attack_order:
+            attack_data = self.attack_prompts[attack_id]
+            request = RequestEnvelope(
+                user_input=attack_data["text"],
+                attack_label=attack_data["type"]
+            )
+            
+            trace = pipeline.process(
+                request,
+                isolation_mode="good",
+                experiment_id=f"{experiment_id}_{config_name}_t{trial_num}"
+            )
+            
+            self.db.save_execution_trace(trace)
+            
+            trial_results["attack_results"].append({
+                "attack_id": attack_id,
+                "attack_type": attack_data["type"],
+                "attack_successful": trace.attack_successful,
+                "blocked_at_layer": trace.blocked_at_layer,
+            })
+            
+        # Test benign prompts in randomized order
+        for benign_id in benign_order:
+            benign_data = self.benign_prompts[benign_id]
+            request = RequestEnvelope(
+                user_input=benign_data["text"],
+                attack_label=None
+            )
+            
+            trace = pipeline.process(
+                request,
+                isolation_mode="good",
+                experiment_id=f"{experiment_id}_{config_name}_t{trial_num}"
+            )
+            
+            self.db.save_execution_trace(trace)
+            
+            trial_results["benign_results"].append({
+                "benign_id": benign_id,
+                "false_positive": trace.violation_detected,
+            })
+            
+        # Compute metrics for this trial
+        attack_success_rate = sum(
+            1 for r in trial_results["attack_results"] if r["attack_successful"]
+        ) / len(trial_results["attack_results"])
+        
+        false_positive_rate = sum(
+            1 for r in trial_results["benign_results"] if r["false_positive"]
+        ) / len(trial_results["benign_results"])
+        
+        trial_results["metrics"] = {
+            "attack_success_rate": attack_success_rate,
+            "false_positive_rate": false_positive_rate,
+            "total_attacks": len(trial_results["attack_results"]),
+            "total_benign": len(trial_results["benign_results"]),
+        }
+        
+        return trial_results
+
+    def run_experiment_3(self, config_filter: Optional[str] = None) -> Dict[str, Any]:
         """
-        logger.info("="*80)
-        logger.info("EXPERIMENT 3: Coordinated vs Isolated Defense (RQ3)")
+        Experiment 3: Coordinated vs. Isolated Layer effectiveness.
+        """
+        logger.info("\n" + "="*80)
+        logger.info("EXPERIMENT 3: COORDINATED VS. ISOLATED LAYERS")
         logger.info("="*80)
         
         experiment_id = "exp3_coordinated_defense"
@@ -515,81 +624,15 @@ class ExperimentRunner:
         results = {}
         
         for config_name, layer_config in configs.items():
-            logger.info(f"\n--- Testing {config_name} ---")
-            
-            pipeline = DefensePipeline(self.config)
-            pipeline.configure_layers(**layer_config)
-            
-            config_results = {
-                "attack_results": [],
-                "benign_results": [],
-                "config": layer_config,
-            }
-            
-            # Test all attack types
-            for attack_id, attack_data in self.attack_prompts.items():
-                request = RequestEnvelope(
-                    user_input=attack_data["text"],
-                    attack_label=attack_data["type"]
-                )
-                
-                trace = pipeline.process(
-                    request,
-                    isolation_mode="good",
-                    experiment_id=f"{experiment_id}_{config_name}"
-                )
-                
-                self.db.save_execution_trace(trace)
-                
-                config_results["attack_results"].append({
-                    "attack_id": attack_id,
-                    "attack_type": attack_data["type"],
-                    "attack_successful": trace.attack_successful,
-                    "blocked_at_layer": trace.blocked_at_layer,
-                })
-            
-            # Test benign prompts
-            for benign_id, benign_data in self.benign_prompts.items():
-                request = RequestEnvelope(
-                    user_input=benign_data["text"],
-                    attack_label=None
-                )
-                
-                trace = pipeline.process(
-                    request,
-                    isolation_mode="good",
-                    experiment_id=f"{experiment_id}_{config_name}"
-                )
-                
-                self.db.save_execution_trace(trace)
-                
-                config_results["benign_results"].append({
-                    "benign_id": benign_id,
-                    "false_positive": trace.violation_detected,
-                })
-            
-            # Compute metrics
-            attack_success_rate = sum(
-                1 for r in config_results["attack_results"] if r["attack_successful"]
-            ) / len(config_results["attack_results"])
-            
-            false_positive_rate = sum(
-                1 for r in config_results["benign_results"] if r["false_positive"]
-            ) / len(config_results["benign_results"])
-            
-            config_results["metrics"] = {
-                "attack_success_rate": attack_success_rate,
-                "false_positive_rate": false_positive_rate,
-                "total_attacks": len(config_results["attack_results"]),
-                "total_benign": len(config_results["benign_results"]),
-            }
-            
-            logger.info(
-                f"{config_name}: "
-                f"Success={attack_success_rate:.1%}, "
-                f"FP={false_positive_rate:.1%}"
+            if config_filter and config_filter not in config_name:
+                continue
+            config_results = self._run_configuration_with_trials(
+                config_name,
+                self._run_experiment_3_trial,
+                layer_config=layer_config,
+                experiment_id=experiment_id,
+                config_name=config_name
             )
-            
             results[config_name] = config_results
         
         logger.info("\n" + "="*80)
@@ -598,6 +641,58 @@ class ExperimentRunner:
         
         return results
     
+    def _run_experiment_4_trial(
+        self,
+        trial_num: int,
+        attack_order: List[str],
+        benign_order: List[str],
+        layer_config: Dict[str, Any],
+        experiment_id: str,
+        config_name: str
+    ) -> Dict[str, Any]:
+        """Run a single trial for Experiment 4."""
+        pipeline = DefensePipeline(self.config)
+        pipeline.configure_layers(**layer_config)
+        
+        trial_results = {
+            "attack_results": [],
+        }
+        
+        # Test attacks in randomized order
+        for attack_id in attack_order:
+            attack_data = self.attack_prompts[attack_id]
+            request = RequestEnvelope(
+                user_input=attack_data["text"],
+                attack_label=attack_data["type"]
+            )
+            
+            trace = pipeline.process(
+                request,
+                isolation_mode="good",
+                experiment_id=f"{experiment_id}_{config_name}_t{trial_num}"
+            )
+            
+            self.db.save_execution_trace(trace)
+            
+            trial_results["attack_results"].append({
+                "attack_id": attack_id,
+                "attack_type": attack_data["type"],
+                "attack_successful": trace.attack_successful,
+            })
+            
+        # Compute metrics for this trial
+        attack_success_rate = sum(
+            1 for r in trial_results["attack_results"] if r["attack_successful"]
+        ) / len(trial_results["attack_results"])
+        
+        trial_results["metrics"] = {
+            "attack_success_rate": attack_success_rate,
+            "false_positive_rate": 0.0, # Exp 4 doesn't focus on FP
+            "total_attacks": len(trial_results["attack_results"]),
+        }
+        
+        return trial_results
+
     def run_experiment_4(self) -> Dict[str, Any]:
         """
         Experiment 4: Layer Ablation Study
@@ -656,66 +751,29 @@ class ExperimentRunner:
         results = {}
         
         for config_name, layer_config in configs.items():
-            logger.info(f"\n--- Testing {config_name} ---")
-            
-            pipeline = DefensePipeline(self.config)
-            pipeline.configure_layers(**layer_config)
-            
-            config_results = {
-                "attack_results": [],
-                "config": layer_config,
-            }
-            
-            # Test all attacks
-            for attack_id, attack_data in self.attack_prompts.items():
-                request = RequestEnvelope(
-                    user_input=attack_data["text"],
-                    attack_label=attack_data["type"]
-                )
-                
-                trace = pipeline.process(
-                    request,
-                    isolation_mode="good",
-                    experiment_id=f"{experiment_id}_{config_name}"
-                )
-                
-                self.db.save_execution_trace(trace)
-                
-                config_results["attack_results"].append({
-                    "attack_id": attack_id,
-                    "attack_type": attack_data["type"],
-                    "attack_successful": trace.attack_successful,
-                })
-            
-            # Compute metrics
-            attack_success_rate = sum(
-                1 for r in config_results["attack_results"] if r["attack_successful"]
-            ) / len(config_results["attack_results"])
-            
-            config_results["metrics"] = {
-                "attack_success_rate": attack_success_rate,
-                "total_attacks": len(config_results["attack_results"]),
-            }
-            
-            logger.info(
-                f"{config_name}: Success={attack_success_rate:.1%}"
+            config_results = self._run_configuration_with_trials(
+                config_name,
+                self._run_experiment_4_trial,
+                layer_config=layer_config,
+                experiment_id=experiment_id,
+                config_name=config_name
             )
-            
             results[config_name] = config_results
         
         # Compute delta contributions
-        baseline_success = results["Full_Stack"]["metrics"]["attack_success_rate"]
+        baseline_success = results["Full_Stack"]["pooled_asr"]
         
         for config_name in ["Remove_Layer1", "Remove_Layer2", "Remove_Layer3", "Remove_Layer5"]:
-            ablated_success = results[config_name]["metrics"]["attack_success_rate"]
-            delta = ablated_success - baseline_success
-            results[config_name]["metrics"]["contribution_delta"] = delta
-            
-            layer_name = config_name.replace("Remove_", "")
-            logger.info(
-                f"{layer_name} contribution: Δ = {delta:+.1%} "
-                f"(removes this layer → {ablated_success:.1%} success)"
-            )
+            if config_name in results:
+                ablated_success = results[config_name]["pooled_asr"]
+                delta = ablated_success - baseline_success
+                results[config_name]["contribution_delta"] = delta
+                
+                layer_name = config_name.replace("Remove_", "")
+                logger.info(
+                    f"{layer_name} contribution: Δ = {delta:+.1%} "
+                    f"(removes this layer → {ablated_success:.1%} success)"
+                )
         
         logger.info("\n" + "="*80)
         logger.info("EXPERIMENT 4 COMPLETE")
