@@ -135,6 +135,7 @@ This repository represents archived experimental material for a journal publicat
 
 - **Arindam Tripathi** - *Lead Researcher* - [Arindamtripathi619](https://github.com/Arindamtripathi619)
 - **Arghya Bose** - *Researcher* - [officialarghya29](https://github.com/officialarghya29)
+- **Arghya Paul** - *Researcher* - 24155977@kiit.ac.in
 
 **Supervised by:**
 - **Dr. Sushruta Mishra** - *Faculty, School of Computer Engineering, KIIT University*
